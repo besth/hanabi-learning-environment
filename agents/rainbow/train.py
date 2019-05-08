@@ -78,7 +78,9 @@ def launch_experiment():
   experiment_logger = logger.Logger('{}/logs'.format(FLAGS.base_dir))
 
   environment = run_experiment.create_environment()
-  obs_stacker = run_experiment.create_obs_stacker(environment)
+  #obs_stacker = run_experiment.create_obs_stacker(environment)
+  import pdb
+  obs_stacker = run_experiment.create_obs_stacker(environment, history_size=1)
   agent = run_experiment.create_agent(environment, obs_stacker)
 
   checkpoint_dir = '{}/checkpoints'.format(FLAGS.base_dir)

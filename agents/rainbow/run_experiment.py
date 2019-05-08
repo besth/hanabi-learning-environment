@@ -40,6 +40,38 @@ import tensorflow as tf
 
 LENIENT_SCORE = False
 
+import pdb
+
+
+PLAYERS = 2
+HANDSIZE = 5
+CARDBITS = 25
+
+MAXDECK = 50
+COLORS = 5
+RANKS = 5
+INFOTOKENS = 8
+LIFETOKENS = 3
+
+HANDS_BITS = ((PLAYERS-1) * HANDSIZE * CARDBITS + PLAYERS)
+BOARD_BITS = HANDS_BITS + (
+              MAXDECK - PLAYERS * HANDSIZE + # DECK
+              COLORS * RANKS +    # FIREWORKS
+              INFOTOKENS +        # INFO TOKENS
+              LIFETOKENS)         # LIFE TOKENS
+DISCARD_BITS = BOARD_BITS + MAXDECK
+ACTION_BITS = DISCARD_BITS + (PLAYERS +
+              4 +
+              PLAYERS +
+              COLORS +
+              RANKS +
+              HANDSIZE +
+              HANDSIZE +
+              CARDBITS
+              + 2)
+KNOWLEDGE_BITS = (ACTION_BITS +
+                  PLAYERS * HANDSIZE * (CARDBITS + COLORS + RANKS))
+
 
 class ObservationStacker(object):
   """Class for stacking agent observations."""
@@ -139,9 +171,12 @@ def create_obs_stacker(environment, history_size=4):
   Returns:
     An observation stacker object.
   """
+  redundant = ((environment.players-1) * environment.game.hand_size() * 25
+                + environment.players)
 
   return ObservationStacker(history_size,
-                            environment.vectorized_observation_shape()[0],
+                            environment.vectorized_observation_shape()[0] -
+                            (HANDS_BITS + (ACTION_BITS - DISCARD_BITS)),
                             environment.players)
 
 
@@ -268,9 +303,22 @@ def parse_observations(observations, num_actions, obs_stacker):
       observations['player_observations'][current_player])
 
   legal_moves = current_player_observation['legal_moves_as_int']
+  #legal_moves_dict = current_player_observation['legal_moves']
+  #non_reveal_moves = []
+  #for move, d in zip(legal_moves, legal_moves_dict):
+  #    if ('REVEAL' in d['action_type']):
+  #        continue
+  #    non_reveal_moves.append(move)
+  #legal_moves = format_legal_moves(non_reveal_moves, num_actions)
+  # apparently, discards are illegal without reveals
   legal_moves = format_legal_moves(legal_moves, num_actions)
 
   observation_vector = current_player_observation['vectorized']
+  observation_vector = (
+          observation_vector[HANDS_BITS:DISCARD_BITS] +
+          observation_vector[ACTION_BITS:])
+  # obs only includes board, discard, and knowledge (no hands & action)
+
   obs_stacker.add_observation(observation_vector, current_player)
   observation_vector = obs_stacker.get_observation_stack(current_player)
 
