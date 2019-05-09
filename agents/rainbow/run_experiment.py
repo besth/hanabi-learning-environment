@@ -72,6 +72,58 @@ ACTION_BITS = DISCARD_BITS + (PLAYERS +
 KNOWLEDGE_BITS = (ACTION_BITS +
                   PLAYERS * HANDSIZE * (CARDBITS + COLORS + RANKS))
 
+LOW_RANK_END = 3
+MID_RANK_END = 9
+CARDS_PER_COLOR = 10 # = 3 + 2 + 2 + 2 + 1
+
+CARD_TOTALS = np.zeros((COLORS, RANKS))
+CARD_TOTALS[:,0] = 3
+CARD_TOTALS[:,1:4] = 2
+CARD_TOTALS[:,-1] = 1
+
+def card_probs(obs):
+    '''
+    from parse_observation:
+    obs = current_player_observation['vectorized']
+    '''
+
+    pdb.set_trace()
+
+    hand    = obs[            :HANDS_BITS - PLAYERS]
+    board   = obs[HANDS_BITS  :BOARD_BITS]
+    discard = obs[BOARD_BITS  :DISCARD_BITS]
+
+    ## Hands
+    hands = np.array(hand).reshape(PLAYERS-1, HANDSIZE, COLORS, RANKS)
+    cards_in_hands = np.sum(hands, axis = (0,1))
+
+    ## Board
+    deck      = board[:MAXDECK - PLAYERS * HANDSIZE]
+    fireworks = board[len(deck):len(deck) + COLORS * RANKS]
+
+    cards_remaining = sum(deck)
+    cards_played = np.array(fireworks).reshape(COLORS,RANKS)
+
+    ## Discard
+    # each color in discard looks like this:
+    # LLL      H
+    # 1100011101
+    discarded = np.array(discard).reshape(COLORS,CARDS_PER_COLOR)
+    cards_discarded = np.zeros((COLORS,RANKS))
+    # total low (3 of each)
+    cards_discarded[:,0] = np.sum(discarded[:,:LOW_RANK_END], axis=1)
+    # total mid (2 of each)
+    cards_discarded[:,1:4] = (  discarded[:,LOW_RANK_END:MID_RANK_END:2] +
+                                discarded[:,LOW_RANK_END+1:MID_RANK_END+1:2])
+    # total high (1 of each)
+    cards_discarded[:,-1] = discarded[:,-1]
+
+    cards_gone = cards_played + cards_discarded + cards_in_hands
+
+    prob = (CARD_TOTALS - cards_gone).astype(float)
+    prob /= (MAXDECK - np.sum(cards_gone))
+
+    return prob
 
 class ObservationStacker(object):
   """Class for stacking agent observations."""
