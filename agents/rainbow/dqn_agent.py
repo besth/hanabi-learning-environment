@@ -59,7 +59,8 @@ def linearly_decaying_epsilon(decay_period, step, warmup_steps, epsilon):
   return epsilon + bonus
 
 
-def dqn_template(state, num_actions, layer_size=512, num_layers=1):
+#def dqn_template(state, num_actions, layer_size=512, num_layers=1):
+def dqn_template(state, num_actions, layer_size=1024, num_layers=2):
   r"""Builds a DQN Network mapping states to Q-values.
 
   Args:
@@ -513,12 +514,12 @@ class DQNAgent(object):
     Returns:
       A boolean indicating whether unbundling was successful.
     """
-    try:
-      # replay.load() will throw a GOSError if it does not find all the
-      # necessary files, in which case we should abort the process.
-      self._replay.load(checkpoint_dir, iteration_number)
-    except tf.errors.NotFoundError:
-      return False
+    #try:
+    #  # replay.load() will throw a GOSError if it does not find all the
+    #  # necessary files, in which case we should abort the process.
+    #  self._replay.load(checkpoint_dir, iteration_number)
+    #except tf.errors.NotFoundError:
+    #  return False
     for key in self.__dict__:
       if key in bundle_dictionary:
         self.__dict__[key] = bundle_dictionary[key]
