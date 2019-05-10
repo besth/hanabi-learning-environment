@@ -176,7 +176,10 @@ def create_obs_stacker(environment, history_size=4):
 
   return ObservationStacker(history_size,
                             environment.vectorized_observation_shape()[0] -
-                            (HANDS_BITS + (ACTION_BITS - DISCARD_BITS)),
+                            #no hands, no actions
+                            (HANDS_BITS + (ACTION_BITS - DISCARD_BITS)
+                            #no reveal hist section in knowledge
+                             + PLAYERS * HANDSIZE * (COLORS + RANKS)),
                             environment.players)
 
 
@@ -313,10 +316,15 @@ def parse_observations(observations, num_actions, obs_stacker):
   # apparently, discards are illegal without reveals
   legal_moves = format_legal_moves(legal_moves, num_actions)
 
+  pdb.set_trace()
   observation_vector = current_player_observation['vectorized']
+
+  knowledge = np.array(observation_vector[ACTION_BITS:])
+  knowledge = knowledge.reshape(PLAYERS, HANDSIZE, CARDBITS + COLORS + RANKS)
+  no_reveal_hist = knowledge[:,:,:CARDBITS].flatten().tolist()
   observation_vector = (
           observation_vector[HANDS_BITS:DISCARD_BITS] +
-          observation_vector[ACTION_BITS:])
+          no_reveal_hist)
   # obs only includes board, discard, and knowledge (no hands & action)
 
   obs_stacker.add_observation(observation_vector, current_player)
