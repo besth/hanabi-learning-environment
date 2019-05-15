@@ -23,8 +23,6 @@ slim = tf.contrib.slim
 
 import pdb
 
-NO_REDUNDANT_KNOWLEDGE = True #False
-
 def parse_observations(observations, num_actions, obs_stacker):
   """ ORIGINAL PYHANABI FUNCTION with minor edits
   Deconstructs the rich observation data into relevant components.
@@ -406,22 +404,15 @@ class QMDPAgent(object):
     return samples
 
   def full_obs_vector(self, observation):
-    if (NO_REDUNDANT_KNOWLEDGE):
-      knowledge = np.array(observation[self.action_bits:])
-      knowledge = knowledge.reshape(self.players,
-                                    self.handsize,
-                                    self.cardbits + self.colors + self.ranks)
-      no_reveal_hist = knowledge[:,:,:self.cardbits].flatten()
-      knowledge_len = no_reveal_hist.shape[0]
-      mdp_observation_vector = np.concatenate((
-                         observation[self.hands_bits:self.discard_bits],
-                         no_reveal_hist))
-    else:
-      mdp_observation_vector = np.concatenate((
-                         observation[self.hands_bits:self.discard_bits],
-                         observation[self.action_bits:]))
-      knowledge_len = observation[self.action_bits:].shape[0]
-
+    knowledge = np.array(observation[self.action_bits:])
+    knowledge = knowledge.reshape(self.players,
+                                  self.handsize,
+                                  self.cardbits + self.colors + self.ranks)
+    no_reveal_hist = knowledge[:,:,:self.cardbits].flatten()
+    knowledge_len = no_reveal_hist.shape[0]
+    mdp_observation_vector = np.concatenate((
+                       observation[self.hands_bits:self.discard_bits],
+                       no_reveal_hist))
 
     return mdp_observation_vector
 
@@ -575,24 +566,21 @@ if __name__ == '__main__':
 
   test = 'RAINBOW'
 
+  config_path = ('/home/siyuan/Downloads/test/hanabi/nips2019/src/' +
+                  'hanabi-learning-environment/agents/rainbow/configs/')
+
   if (test == 'RAINBOW'):
-    run_experiment.load_gin_configs(['configs/hanabi_rainbow.gin'], [])
-    #CKPT_DIR = '/home/siyuan/Downloads/test/hanabi/redundant_knowledge/hanabi_rainbow_ckpt/checkpoints'
-    #CKPT_DIR = '/home/siyuan/Downloads/test/hanabi/redundant_knowledge/hanabi_rainbow_ckpt_10000'
+    run_experiment.load_gin_configs([config_path + 'hanabi_rainbow.gin'], [])
     CKPT_DIR = '/home/siyuan/Downloads/test/hanabi/non_redundant_knowledge/hanabi_rainbow_ckpt_5200'
-    #TODO: NO_REDUNDANT_KNOWLEDGE = False
   elif (test == 'DQN'):
-    run_experiment.load_gin_configs(['configs/hanabi_dqn.gin'], [])
+    run_experiment.load_gin_configs([config_path + 'hanabi_dqn.gin'], [])
     CKPT_DIR = '/home/siyuan/Downloads/test/hanabi/dqn_base_dir/checkpoints'
-    #TODO: NO_REDUNDANT_KNOWLEDGE = True
   else:
     print('please set test in main')
-    #checkpoint_dir = '/home/siyuan/Downloads/test/hanabi/dqn_512_1_base_dir/checkpoints',
-    #checkpoint_dir = '/home/siyuan/Downloads/test/hanabi/debug_base_dir/checkpoints',
     quit()
 
   environment = run_experiment.create_environment()
-  obs_stacker = run_experiment.create_obs_stacker(environment, history_size=1, test=test)
+  obs_stacker = run_experiment.create_obs_stacker(environment, history_size=1)
 
   agent = QMDPAgent(game = environment.game,
                     checkpoint_dir = CKPT_DIR,

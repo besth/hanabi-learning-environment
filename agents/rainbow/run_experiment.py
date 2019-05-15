@@ -211,7 +211,7 @@ def create_environment(game_type='Hanabi-Full', num_players=2):
 
 
 @gin.configurable
-def create_obs_stacker(environment, history_size=4, test='DQN'):
+def create_obs_stacker(environment, history_size=4):
   """Creates an observation stacker.
 
   Args:
@@ -221,7 +221,6 @@ def create_obs_stacker(environment, history_size=4, test='DQN'):
   Returns:
     An observation stacker object.
   """
-  #if (test == 'DQN'):
   return ObservationStacker(history_size,
                             environment.vectorized_observation_shape()[0] -
                               #no hands, no actions
@@ -229,15 +228,6 @@ def create_obs_stacker(environment, history_size=4, test='DQN'):
                               #no reveal hist section in knowledge
                                + PLAYERS * HANDSIZE * (COLORS + RANKS)),
                             environment.players)
-  #elif (test == 'RAINBOW'):
-  #  return ObservationStacker(history_size,
-  #                          environment.vectorized_observation_shape()[0] -
-  #                            #no hands, no actions
-  #                            (HANDS_BITS + (ACTION_BITS - DISCARD_BITS)
-  #                            #no reveal hist section in knowledge
-  #                             + PLAYERS * HANDSIZE * (COLORS + RANKS)),
-  #                          environment.players)
-
 
 @gin.configurable
 def create_agent(environment, obs_stacker, agent_type='DQN'):
