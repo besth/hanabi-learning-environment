@@ -23,7 +23,7 @@ slim = tf.contrib.slim
 
 import pdb
 
-NO_REDUNDANT_KNOWLEDGE = False
+NO_REDUNDANT_KNOWLEDGE = True #False
 
 def parse_observations(observations, num_actions, obs_stacker):
   """ ORIGINAL PYHANABI FUNCTION with minor edits
@@ -102,6 +102,7 @@ def run_one_episode(agent, environment, obs_stacker):
     current_player, legal_moves, observation_vector = (
         parse_observations(observations, environment.num_moves(), obs_stacker))
     if current_player in has_played:
+      agent.debug_obs = observations['player_observations'][observations['current_player']]
       action = agent.step(reward_since_last_action[current_player],
                           current_player, legal_moves, observation_vector)
     else:
@@ -278,6 +279,8 @@ class QMDPAgent(object):
     self.card_totals[:,1:4] = 2
     self.card_totals[:,-1] = 1
 
+    self.debug_obs = None
+
   def individual_card_counts(self, obs):
     # TODO: unit test this
     '''
@@ -357,6 +360,8 @@ class QMDPAgent(object):
     knowledge = self.extract_knowledge(obs[self.action_bits:])
     # knowledge is a bitmask representing potential cards
     all_counts = counts * knowledge
+    #if self.debug_obs['deck_size'] < 5:
+    #  pdb.set_trace()
     return all_counts
 
   def _sample_hand(self, observation, n_samples=25):
@@ -429,15 +434,7 @@ class QMDPAgent(object):
     # DO NOTHING
     return
 
-  def _select_action(self, observation, legal_actions,
-                        n_samples = 25):
-    #return self._select_action_direct_prob_belief(observation, legal_actions,
-    #                    n_samples = n_samples)
-    return self._select_action_expect_each_card(observation, legal_actions,
-                        n_samples = 1)
-
-  def _select_action_direct_prob_belief(self, observation, legal_actions,
-                        n_samples = 25):
+  def _select_action(self, observation, legal_actions):
     """Select an action from the set of allowed actions.
 
     Args:
@@ -448,6 +445,22 @@ class QMDPAgent(object):
     Returns:
       action: int, a legal action.
     """
+    debug_full_obs = False
+    if (debug_full_obs):
+      mdp_observation = self.full_obs_vector(observation)
+      action = self.pretrained_mdp._select_action(mdp_observation, legal_actions)
+    else:
+      avg_q_a = self._expected_action_value(observation)
+      action = np.argmax(avg_q_a + legal_actions)
+    return action
+
+  def _expected_action_value(self, observation):
+    return self._expected_action_value_direct_prob_belief(observation,
+                        n_samples = 1000)
+    #return self._expected_action_value_expect_each_card(observation,
+    #                    n_samples = 1)
+
+  def _expected_action_value_direct_prob_belief(self, observation, n_samples = 25):
     mdp = self.pretrained_mdp
     #mdp._q + mdp.legal_actions_ph
 
@@ -486,11 +499,9 @@ class QMDPAgent(object):
       q_a_vec = mdp._sess.run(mdp._q, {mdp.state_ph: mdp.state})
       avg_q_a += q_a_vec
     avg_q_a /= len(samples)
-    action = np.argmax(avg_q_a + legal_actions)
-    return action
+    return avg_q_a
 
-  def _select_action_expect_each_card(self, observation, legal_actions,
-                        n_samples = 1):
+  def _expected_action_value_expect_each_card(self, observation, n_samples = 1):
     """Select an action from the set of allowed actions.
 
     for each card:
@@ -499,8 +510,6 @@ class QMDPAgent(object):
 
     Args:
       observation: `np.array`, the current observation.
-      legal_actions: `np.array`, describing legal actions, with -inf meaning
-        not legal.
 
     Returns:
       action: int, a legal action.
@@ -552,11 +561,10 @@ class QMDPAgent(object):
           q_a_vec = mdp._sess.run(mdp._q, {mdp.state_ph: mdp.state})
           avg_q_a += q_a_vec * prob[card_i]
     avg_q_a /= len(samples * self.colors * self.ranks)
-    action = np.argmax(avg_q_a + legal_actions)
-    return action
+    return avg_q_a
 
   def step(self, reward, current_player, legal_actions, observation):
-    self.action = self._select_action(observation, legal_actions, n_samples=125)
+    self.action = self._select_action(observation, legal_actions)
     return self.action
 
 if __name__ == '__main__':
@@ -569,8 +577,9 @@ if __name__ == '__main__':
 
   if (test == 'RAINBOW'):
     run_experiment.load_gin_configs(['configs/hanabi_rainbow.gin'], [])
-    #CKPT_DIR = '/home/siyuan/Downloads/test/hanabi/hanabi_rainbow_ckpt/checkpoints'
-    CKPT_DIR = '/home/siyuan/Downloads/test/hanabi/hanabi_rainbow_ckpt_10000'
+    #CKPT_DIR = '/home/siyuan/Downloads/test/hanabi/redundant_knowledge/hanabi_rainbow_ckpt/checkpoints'
+    #CKPT_DIR = '/home/siyuan/Downloads/test/hanabi/redundant_knowledge/hanabi_rainbow_ckpt_10000'
+    CKPT_DIR = '/home/siyuan/Downloads/test/hanabi/non_redundant_knowledge/hanabi_rainbow_ckpt_5200'
     #TODO: NO_REDUNDANT_KNOWLEDGE = False
   elif (test == 'DQN'):
     run_experiment.load_gin_configs(['configs/hanabi_dqn.gin'], [])
