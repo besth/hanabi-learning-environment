@@ -534,7 +534,8 @@ def make(environment_name="Hanabi-Full", num_players=2, pyhanabi_path=None):
             "max_life_tokens":
                 3,
             "observation_type":
-                pyhanabi.AgentObservationType.SEER.value
+                #pyhanabi.AgentObservationType.SEER.value
+                pyhanabi.AgentObservationType.CARD_KNOWLEDGE.value
         })
   elif environment_name == "Hanabi-Full-Minimal":
     return HanabiEnv(

@@ -13,6 +13,7 @@ import functools
 
 from third_party.dopamine import checkpointer
 import dqn_agent
+import rainbow_agent
 import gin.tf
 import numpy as np
 import prioritized_replay_memory
@@ -21,6 +22,8 @@ import tensorflow as tf
 slim = tf.contrib.slim
 
 import pdb
+
+NO_REDUNDANT_KNOWLEDGE = False
 
 def parse_observations(observations, num_actions, obs_stacker):
   """ ORIGINAL PYHANABI FUNCTION with minor edits
@@ -80,12 +83,18 @@ def run_one_episode(agent, environment, obs_stacker):
   reward_since_last_action = np.zeros(environment.players)
 
   while not is_done:
+    chosen_action = observations['player_observations'][current_player]['legal_moves'][
+                                    np.arange(20)[legal_moves>=0].tolist().index(action)]
+    print(observations['player_observations'][current_player])
+    print('action: {}'.format(str(chosen_action)))
     observations, reward, is_done, _ = environment.step(action.item())
 
     modified_reward = max(reward, 0) if run_experiment.LENIENT_SCORE else reward
     total_reward += modified_reward
 
     reward_since_last_action += modified_reward
+
+    print('modified reward: {0} \t total reward:{1}'.format(modified_reward, total_reward))
 
     step_number += 1
     if is_done:
@@ -122,6 +131,7 @@ class QMDPAgent(object):
                game,
                checkpoint_dir,
                checkpoint_file_prefix = 'ckpt', #see dqn agent
+               agent_type='DQN',
                num_actions=None,
                observation_size=None,
                num_players=None,
@@ -159,20 +169,36 @@ class QMDPAgent(object):
       optimizer_epsilon: float, epsilon for Adam optimizer.
       tf_device: str, Tensorflow device on which to run computations.
     """
-    self.pretrained_mdp = dqn_agent.DQNAgent(
-        num_actions=num_actions,
-        observation_size=observation_size,
-        num_players=num_players,
-        gamma=gamma,
-        update_horizon=update_horizon,
-        min_replay_history=min_replay_history,
-        update_period=update_period,
-        target_update_period=target_update_period,
-        epsilon_train=epsilon_train,
-        epsilon_eval=epsilon_eval,
-        epsilon_decay_period=epsilon_decay_period,
-        graph_template=dqn_agent.dqn_template,
-        tf_device=tf_device)
+    if (agent_type == 'DQN'):
+      self.pretrained_mdp = dqn_agent.DQNAgent(
+          num_actions=num_actions,
+          observation_size=observation_size,
+          num_players=num_players,
+          gamma=gamma,
+          update_horizon=update_horizon,
+          min_replay_history=min_replay_history,
+          update_period=update_period,
+          target_update_period=target_update_period,
+          epsilon_train=epsilon_train,
+          epsilon_eval=epsilon_eval,
+          epsilon_decay_period=epsilon_decay_period,
+          graph_template=dqn_agent.dqn_template,
+          tf_device=tf_device)
+    elif (agent_type == 'RAINBOW'):
+      self.pretrained_mdp = rainbow_agent.RainbowAgent(
+          num_actions=num_actions,
+          observation_size=observation_size,
+          num_players=num_players,
+          gamma=gamma,
+          update_horizon=update_horizon,
+          min_replay_history=min_replay_history,
+          update_period=update_period,
+          target_update_period=target_update_period,
+          epsilon_train=epsilon_train,
+          epsilon_eval=epsilon_eval,
+          epsilon_decay_period=epsilon_decay_period,
+          tf_device=tf_device)
+
 
     ## Load Weights
     experiment_checkpointer = checkpointer.Checkpointer(
@@ -252,25 +278,8 @@ class QMDPAgent(object):
     self.card_totals[:,1:4] = 2
     self.card_totals[:,-1] = 1
 
-  #def _reshape_networks(self):
-  #  # self._q is actually logits now, rename things.
-  #  # size of _logits: 1 x num_actions x num_atoms
-  #  self._logits = self._q
-  #  # size of _probabilities: 1 x num_actions x num_atoms
-  #  self._probabilities = tf.contrib.layers.softmax(self._q)
-  #  # size of _q: 1 x num_actions
-  #  self._q = tf.reduce_sum(self.support * self._probabilities, axis=2)
-  #  # Recompute argmax from q values. Ignore illegal actions.
-  #  self._q_argmax = tf.argmax(self._q + self.legal_actions_ph, axis=1)[0]
-
-  #  # size of _replay_logits: 1 x num_actions x num_atoms
-  #  self._replay_logits = self._replay_qs
-  #  # size of _replay_next_logits: 1 x num_actions x num_atoms
-  #  self._replay_next_logits = self._replay_next_qt
-  #  del self._replay_qs
-  #  del self._replay_next_qt
-
   def individual_card_counts(self, obs):
+    # TODO: unit test this
     '''
     from parse_observation:
     obs = current_player_observation['vectorized']
@@ -314,7 +323,7 @@ class QMDPAgent(object):
     #return prob
     return card_counts
 
-  def extract_knowledge(self, knowledge_obs):
+  def extract_knowledge(self, knowledge_obs, current_player=True):
     '''
     knowledge_obs needs to be just the knowledge part of the obs vector
     return (by reference) a slice of obs corresponding to knowledge
@@ -327,9 +336,15 @@ class QMDPAgent(object):
     # discard other player knowledge, and reveal history
     # (see hanabi_lib/canonical_encoders.cc)
     # what's left is our cards
-    knowledge = knowledge[0,:,:self.cardbits].reshape(self.handsize,
-                                                      self.colors,
-                                                      self.ranks)
+    if (current_player):
+      knowledge = knowledge[0,:,:self.cardbits].reshape(self.handsize,
+                                                        self.colors,
+                                                        self.ranks)
+    else:
+      knowledge = knowledge[1:,:,:self.cardbits].reshape(self.players - 1,
+                                                         self.handsize,
+                                                         self.colors,
+                                                         self.ranks)
     return knowledge
 
   def card_counts(self, obs):
@@ -337,6 +352,7 @@ class QMDPAgent(object):
     from parse_observation:
     obs = current_player_observation['vectorized']
     '''
+    # TODO: unit test this
     counts = self.individual_card_counts(obs)
     knowledge = self.extract_knowledge(obs[self.action_bits:])
     # knowledge is a bitmask representing potential cards
@@ -344,52 +360,64 @@ class QMDPAgent(object):
     return all_counts
 
   def _sample_hand(self, observation, n_samples=25):
+    # TODO: maybe shuffle the order we sample slots
+    order = range(self.handsize)
+    samples = self._sample_hand_in_order(observation, order, n_samples, samples_only=True)
+    return samples
 
-    ## sample state
-    #   - sample some using belief
-    #   - encode into placeholder format
+  def _sample_hand_in_order(self, observation, order, n_samples=25, samples_only=False):
+    # TODO: unit test this
+    ''' sample state
+       - sample some using belief
+       - encode into placeholder format
+    '''
     # flatten array of each card in hand
     card_counts = self.card_counts(observation).reshape(self.handsize, -1)
-
     samples = []
     for sample_i in range(n_samples):
       counts = np.copy(card_counts)
       # sample directly using belief
-
-      # TODO: maybe shuffle the order we sample slots
       card_inds = []
       joint_prob = 1.0
-      for hand_i in range(self.handsize):
+      for hand_i in order:
         card_count = counts[hand_i]
         prob = card_count / (1.0 * np.sum(card_count))
-
         card_ind = np.random.choice(a = len(prob),
                                     #size = 1, default is single value
                                     replace = False,
                                     p = prob)
         card_prob = prob[card_ind]
-
         # update accumulators
         card_inds.append(card_ind)
         joint_prob *= card_prob
-
         # subtract this card from the card counts of other slots
         # where they're positive
         # (subtracts from all slots, but we're not re-using any)
         counts[:,card_ind] -= (0 < counts[:,card_ind])
-
-      samples.append((np.array(card_inds), joint_prob))
+      if (samples_only):
+        samples.append(np.array(card_inds))
+      else:
+        samples.append((np.array(card_inds), joint_prob, counts))
     return samples
 
   def full_obs_vector(self, observation):
-    knowledge = np.array(observation[self.action_bits:])
-    knowledge = knowledge.reshape(self.players,
-                                  self.handsize,
-                                  self.cardbits + self.colors + self.ranks)
-    no_reveal_hist = knowledge[:,:,:self.cardbits].flatten()
-    mdp_observation_vector = np.concatenate((
-                       observation[self.hands_bits:self.discard_bits],
-                       no_reveal_hist))
+    if (NO_REDUNDANT_KNOWLEDGE):
+      knowledge = np.array(observation[self.action_bits:])
+      knowledge = knowledge.reshape(self.players,
+                                    self.handsize,
+                                    self.cardbits + self.colors + self.ranks)
+      no_reveal_hist = knowledge[:,:,:self.cardbits].flatten()
+      knowledge_len = no_reveal_hist.shape[0]
+      mdp_observation_vector = np.concatenate((
+                         observation[self.hands_bits:self.discard_bits],
+                         no_reveal_hist))
+    else:
+      mdp_observation_vector = np.concatenate((
+                         observation[self.hands_bits:self.discard_bits],
+                         observation[self.action_bits:]))
+      knowledge_len = observation[self.action_bits:].shape[0]
+
+
     return mdp_observation_vector
 
   def begin_episode(self, current_player, legal_actions, observation):
@@ -402,6 +430,13 @@ class QMDPAgent(object):
     return
 
   def _select_action(self, observation, legal_actions,
+                        n_samples = 25):
+    #return self._select_action_direct_prob_belief(observation, legal_actions,
+    #                    n_samples = n_samples)
+    return self._select_action_expect_each_card(observation, legal_actions,
+                        n_samples = 1)
+
+  def _select_action_direct_prob_belief(self, observation, legal_actions,
                         n_samples = 25):
     """Select an action from the set of allowed actions.
 
@@ -430,55 +465,129 @@ class QMDPAgent(object):
     avg_q_a = 0
     slot_index = np.arange(self.handsize)
     # fill in sampled card knowledge and compute q value
-    for card_inds, joint_prob in samples:
-      obs = np.array(mdp_observation_vector)
-      knowledge = self.extract_knowledge(
-                            obs[-self.num_knowledge_bits:])
-      hand = knowledge.reshape(self.handsize, -1)
+    obs = np.array(mdp_observation_vector)
+    knowledge = self.extract_knowledge(
+                          obs[-self.num_knowledge_bits:],
+                          current_player=True)
+    hand = knowledge.reshape(self.handsize, -1)
+    # fill in other players' knowledge too
+    others_knowledge = self.extract_knowledge(
+                                obs[-self.num_knowledge_bits:],
+                                current_player=False)
+    others_knowledge[:] = observation[:self.hands_bits-2].reshape(
+                                                            self.players-1,
+                                                            self.handsize,
+                                                            self.colors,
+                                                            self.ranks)
+    for card_inds in samples:
       hand[:] = 0
       hand[slot_index, card_inds] = 1
-
-      mdp.state[0, :, 0] = obs # TODO: might need to convert to list
+      mdp.state[0, :, 0] = obs
       q_a_vec = mdp._sess.run(mdp._q, {mdp.state_ph: mdp.state})
       avg_q_a += q_a_vec
     avg_q_a /= len(samples)
-
     action = np.argmax(avg_q_a + legal_actions)
+    return action
 
+  def _select_action_expect_each_card(self, observation, legal_actions,
+                        n_samples = 1):
+    """Select an action from the set of allowed actions.
+
+    for each card:
+      - samples all other cards
+      - calculates expectation over all values of this card
+
+    Args:
+      observation: `np.array`, the current observation.
+      legal_actions: `np.array`, describing legal actions, with -inf meaning
+        not legal.
+
+    Returns:
+      action: int, a legal action.
+    """
+    mdp = self.pretrained_mdp
+    #mdp._q + mdp.legal_actions_ph
+
+    ## construct (most of) fully observable observation vector
+    # after this, we'll fill in our sampled card knowledge
+
+    mdp_observation_vector = self.full_obs_vector(observation)
+
+
+    avg_q_a = 0
+    # fill in sampled card knowledge and compute q value
+    obs = np.array(mdp_observation_vector)
+    knowledge = self.extract_knowledge(
+                          obs[-self.num_knowledge_bits:],
+                          current_player=True)
+    hand = knowledge.reshape(self.handsize, -1)
+    # TODO: fill in other players' knowledge vector components too
+    # (which were converted into their hand in the full obs mdp)
+    others_knowledge = self.extract_knowledge(
+                                obs[-self.num_knowledge_bits:],
+                                current_player=False)
+    others_knowledge[:] = observation[:self.hands_bits-2].reshape(
+                                                            self.players-1,
+                                                            self.handsize,
+                                                            self.colors,
+                                                            self.ranks)
+
+    for hand_i in range(self.handsize):
+      slot_index = np.arange(self.handsize)
+      slot_index = slot_index[slot_index != hand_i] # omit one card
+      samples = self._sample_hand_in_order(observation,
+                                           order = slot_index,
+                                           n_samples = n_samples)
+      #TODO: left off here
+
+      for card_inds, joint_prob, counts in samples:
+        # the returned counts are updated to remove those sampled
+        card_count = counts[hand_i]
+        prob = card_count / (1.0 * np.sum(card_count))
+        for card_i in range(self.colors * self.ranks):
+          hand[:] = 0
+          hand[slot_index, card_inds] = 1 # set sampled cards
+          hand[hand_i, card_i] = 1 # set this card
+          mdp.state[0, :, 0] = obs
+          q_a_vec = mdp._sess.run(mdp._q, {mdp.state_ph: mdp.state})
+          avg_q_a += q_a_vec * prob[card_i]
+    avg_q_a /= len(samples * self.colors * self.ranks)
+    action = np.argmax(avg_q_a + legal_actions)
     return action
 
   def step(self, reward, current_player, legal_actions, observation):
-    self.action = self._select_action(observation, legal_actions)
+    self.action = self._select_action(observation, legal_actions, n_samples=125)
     return self.action
 
 if __name__ == '__main__':
   print('testing')
+  # NOTE: run this after running: source setup_script.sh
 
   import run_experiment
-  #FLAGS               = train.FLAGS
-  #app                 = train.app
-  #logger              = train.logger
-  #run_experiment      = train.run_experiment
 
-  #parse_observations  = run_experiment.parse_observations
-  #LENIENT_SCORE       = run_experiment.LENIENT_SCORE
+  test = 'RAINBOW'
 
-  #MODEL_PATH = /home/fan/Desktop/hanabi_rainbow
-  # (this should be fed in as argument)
-  # python visualize_rainbow.py --base_dir=/home/Siyuan/Downloads/test/hanabi/dqn_512_1_base_dir \
-  # --gin_files='hanabi/agents/rainbow/configs/hanabi_rainbow.gin'
-
-  run_experiment.load_gin_configs(['configs/hanabi_rainbow.gin'], [])#FLAGS.gin_bindings)
+  if (test == 'RAINBOW'):
+    run_experiment.load_gin_configs(['configs/hanabi_rainbow.gin'], [])
+    #CKPT_DIR = '/home/siyuan/Downloads/test/hanabi/hanabi_rainbow_ckpt/checkpoints'
+    CKPT_DIR = '/home/siyuan/Downloads/test/hanabi/hanabi_rainbow_ckpt_10000'
+    #TODO: NO_REDUNDANT_KNOWLEDGE = False
+  elif (test == 'DQN'):
+    run_experiment.load_gin_configs(['configs/hanabi_dqn.gin'], [])
+    CKPT_DIR = '/home/siyuan/Downloads/test/hanabi/dqn_base_dir/checkpoints'
+    #TODO: NO_REDUNDANT_KNOWLEDGE = True
+  else:
+    print('please set test in main')
+    #checkpoint_dir = '/home/siyuan/Downloads/test/hanabi/dqn_512_1_base_dir/checkpoints',
+    #checkpoint_dir = '/home/siyuan/Downloads/test/hanabi/debug_base_dir/checkpoints',
+    quit()
 
   environment = run_experiment.create_environment()
-  #obs_stacker = run_experiment.create_obs_stacker(environment)
-  obs_stacker = run_experiment.create_obs_stacker(environment, history_size=1)
-  #agent = run_experiment.create_agent(environment, obs_stacker)
+  obs_stacker = run_experiment.create_obs_stacker(environment, history_size=1, test=test)
 
   agent = QMDPAgent(game = environment.game,
-                    #checkpoint_dir = '/home/siyuan/Downloads/test/hanabi/dqn_512_1_base_dir/checkpoints',
-                    #checkpoint_dir = '/home/siyuan/Downloads/test/hanabi/debug_base_dir/checkpoints',
-                    checkpoint_dir = '/home/siyuan/Downloads/test/hanabi/dqn_base_dir/checkpoints',
+                    checkpoint_dir = CKPT_DIR,
+                    agent_type = test,
                     observation_size=obs_stacker.observation_size(),
                     num_actions=environment.num_moves(),
                     num_players=environment.players)
