@@ -358,8 +358,8 @@ class QMDPAgent(object):
     knowledge = self.extract_knowledge(obs[self.action_bits:])
     # knowledge is a bitmask representing potential cards
     all_counts = counts * knowledge
-    #if self.debug_obs['deck_size'] < 5:
-    #  pdb.set_trace()
+    if self.debug_obs['deck_size'] < 2:
+      pdb.set_trace()
     return all_counts
 
   def _sample_hand(self, observation, n_samples=25):
@@ -376,6 +376,12 @@ class QMDPAgent(object):
     '''
     # flatten array of each card in hand
     card_counts = self.card_counts(observation).reshape(self.handsize, -1)
+
+    # TODO: sanity check with better prob
+    #debug_better_prob = True
+    #if (debug_better_prob):
+    #  card_counts =
+
     samples = []
     for sample_i in range(n_samples):
       counts = np.copy(card_counts)
@@ -404,6 +410,17 @@ class QMDPAgent(object):
     return samples
 
   def full_obs_vector(self, observation):
+    '''
+    returns the fully observable vector components with:
+    - Board
+      - Deck
+      - Fireworks
+      - Info tokens
+      - Life tokens
+    - Discards
+    - Hands (or if not fully observed, card knowledge)
+      - (without bits indicating which hints were given)
+    '''
     knowledge = np.array(observation[self.action_bits:])
     knowledge = knowledge.reshape(self.players,
                                   self.handsize,
@@ -447,7 +464,7 @@ class QMDPAgent(object):
 
   def _expected_action_value(self, observation):
     return self._expected_action_value_direct_prob_belief(observation,
-                        n_samples = 1000)
+                        n_samples = 125)
     #return self._expected_action_value_expect_each_card(observation,
     #                    n_samples = 1)
 
@@ -521,7 +538,7 @@ class QMDPAgent(object):
                           obs[-self.num_knowledge_bits:],
                           current_player=True)
     hand = knowledge.reshape(self.handsize, -1)
-    # TODO: fill in other players' knowledge vector components too
+    # fill in other players' knowledge vector components too
     # (which were converted into their hand in the full obs mdp)
     others_knowledge = self.extract_knowledge(
                                 obs[-self.num_knowledge_bits:],
