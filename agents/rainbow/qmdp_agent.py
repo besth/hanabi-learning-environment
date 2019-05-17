@@ -23,6 +23,9 @@ slim = tf.contrib.slim
 
 import pdb
 
+##---------------------------------------------------------------
+from observation_adapter import ObservationAdapter
+
 def print_state(state):
     """Print some basic information about the state."""
     print("")
@@ -119,8 +122,8 @@ def run_one_episode(agent, environment, obs_stacker):
     current_player, legal_moves, observation_vector = (
         parse_observations(observations, environment.num_moves(), obs_stacker))
     if current_player in has_played:
-      agent.debug_obs = observations['player_observations'][observations['current_player']]
-      agent.debug_other_obs = observations['player_observations'][1-observations['current_player']]
+      agent.obs.debug_obs = observations['player_observations'][observations['current_player']]
+      agent.obs.debug_other_obs = observations['player_observations'][1-observations['current_player']]
       action = agent.step(reward_since_last_action[current_player],
                           current_player, legal_moves, observation_vector)
     else:
@@ -147,7 +150,7 @@ class QMDPAgent(object):
   """
 
   def __init__(self,
-               game,
+               observation_adapter,
                checkpoint_dir,
                checkpoint_file_prefix = 'ckpt', #see dqn agent
                agent_type='DQN',
@@ -188,18 +191,6 @@ class QMDPAgent(object):
       optimizer_epsilon: float, epsilon for Adam optimizer.
       tf_device: str, Tensorflow device on which to run computations.
     """
-    self.debug_obs = None # placeholder for observation
-    self.debug_other_obs = None
-
-    ### testing pretrained mdp with full knowledge
-    self.debug_full_obs = False
-
-    ### testing pretrained mdp with full knowledge plus some error
-    self.debug_with_nearly_perfect_knowledge = False
-    # [0-1] add bits from card knowledge with this chance
-    # 0 is same as qmdp, 1 is same as debug_full_obs
-    self.ERROR_RATE = 0.25
-
     if (agent_type == 'DQN'):
       self.pretrained_mdp = dqn_agent.DQNAgent(
           num_actions=num_actions,
@@ -261,165 +252,22 @@ class QMDPAgent(object):
     #mdp = self.pretrained_mdp
     #mdp._q + mdp.legal_actions_ph
 
+    self.obs = observation_adapter
 
-    ## load/calculate params from game for low level belief
-    self.players = game.num_players()
-    self.handsize = game.hand_size()
+    self.debug_obs = None # placeholder for observation
+    self.debug_other_obs = None
 
-    self.colors = game.num_colors()
-    self.ranks = game.num_ranks()
-    self.infotokens = game.max_information_tokens()
-    self.lifetokens = game.max_life_tokens()
+    ### testing pretrained mdp with full knowledge
+    self.debug_full_obs = False
 
-    self.maxdeck = 0 # should be 50
-    for card_i in range(self.colors):
-        for rank_i in range(self.ranks):
-            self.maxdeck += game.num_cards(card_i, rank_i)
-
-    self.cardbits = self.colors * self.ranks # should be 25
-
-    self.hands_bits = ((self.players-1) * self.handsize * self.cardbits + self.players)
-    self.board_bits = self.hands_bits + (
-                      self.maxdeck - self.players * self.handsize + # deck
-                      self.colors * self.ranks +    # fireworks
-                      self.infotokens +        # info tokens
-                      self.lifetokens)         # life tokens
-    self.discard_bits = self.board_bits + self.maxdeck
-    self.action_bits = self.discard_bits + (self.players +
-                                        4 +
-                                        self.players +
-                                        self.colors +
-                                        self.ranks +
-                                        self.handsize +
-                                        self.handsize +
-                                        self.cardbits
-                                        + 2)
-    #self.knowledge_bits = (self.action_bits +
-    #                       self.players * self.handsize *
-    #                        (self.cardbits + self.colors + self.ranks))
-    # in case we need back compatibility with old full observation vector
-    REDUNDANT = False
-    if (REDUNDANT):
-      self.num_knowledge_bits = (self.players * self.handsize *
-                                (self.cardbits + self.colors + self.ranks))
-    else:
-      self.num_knowledge_bits = (self.players * self.handsize *
-                                (self.cardbits))
-
-    self.low_rank_end = 3
-    self.mid_rank_end = 9
-    self.cards_per_color = 10 # = 3 + 2 + 2 + 2 + 1
-
-    self.card_totals = np.zeros((self.colors, self.ranks))
-    self.card_totals[:,0] = 3
-    self.card_totals[:,1:4] = 2
-    self.card_totals[:,-1] = 1
-
-  def individual_card_counts(self, obs):
-    # TODO: unit test this
-    '''
-    from parse_observation:
-    obs = current_player_observation['vectorized']
-    '''
-    hand    = obs[  :self.hands_bits - self.players]
-    board   = obs[self.hands_bits  :self.board_bits]
-    discard = obs[self.board_bits  :self.discard_bits]
-
-    ## hands
-    hands = np.array(hand).reshape(self.players-1, self.handsize,
-                                    self.colors, self.ranks)
-    cards_in_hands = np.sum(hands, axis = (0,1))
-
-    ## board
-    deck      = board[:self.maxdeck - self.players * self.handsize]
-    fireworks = board[len(deck):len(deck) + self.colors * self.ranks]
-
-    cards_remaining = sum(deck)
-    cards_played = np.array(fireworks).reshape(self.colors,self.ranks)
-
-    ## discard
-    # each color in discard looks like this:
-    # lll      h
-    # 1100011101
-    discarded = np.array(discard).reshape(self.colors,self.cards_per_color)
-    cards_discarded = np.zeros((self.colors,self.ranks))
-    # total low (3 of each)
-    cards_discarded[:,0] = np.sum(discarded[:,:self.low_rank_end], axis=1)
-    # total mid (2 of each)
-    cards_discarded[:,1:4] = (  discarded[:,self.low_rank_end:
-                                            self.mid_rank_end:2] +
-                                discarded[:,self.low_rank_end+1:
-                                            self.mid_rank_end+1:2])
-    # total high (1 of each)
-    cards_discarded[:,-1] = discarded[:,-1]
-
-    cards_gone = cards_played + cards_discarded + cards_in_hands
-
-    card_counts = (self.card_totals - cards_gone).astype(float)
-    #prob = card_counts / (self.maxdeck - np.sum(cards_gone))
-    #return prob
-    return card_counts
-
-  def reshape_hand(self, hand, num_players=1):
-    '''
-    hand should be an array of (total) length
-      num_players x handsize x colors x ranks
-    '''
-    res = hand.reshape(num_players, self.handsize, self.colors, self.ranks)
-    if (num_players == 0):
-      return res[0]
-    else:
-      return res
-
-  def extract_knowledge(self, knowledge_obs, current_player=True):
-    '''
-    knowledge_obs needs to be just the knowledge part of the obs vector
-    return (by reference) a slice of obs corresponding to knowledge
-    '''
-    knowledge = knowledge_obs.reshape(self.players,
-                                      self.handsize,
-                                      self.cardbits +
-                                        self.colors +
-                                        self.ranks)
-    # discard other player knowledge, and reveal history
-    # (see hanabi_lib/canonical_encoders.cc)
-    # what's left is our cards
-    if (current_player):
-      knowledge = self.reshape_hand(knowledge[0,:,:self.cardbits])
-    else:
-      knowledge = self.reshape_hand(knowledge[1:,:,:self.cardbits],
-                                    num_players = self.players-1)
-    return knowledge
-
-  def card_counts(self, obs):
-    '''
-    from parse_observation:
-    obs = current_player_observation['vectorized']
-    '''
-    counts = self.individual_card_counts(obs)
-    knowledge = self.extract_knowledge(obs[self.action_bits:])
-    # knowledge is a bitmask representing potential cards
-
-    if (self.debug_with_nearly_perfect_knowledge):
-      temp_knowledge = knowledge
-      knowledge = np.zeros_like(knowledge)
-      # add error bits
-      knowledge_mask = (temp_knowledge >= 1)
-      error_bits = (np.random.rand(np.sum(knowledge_mask)) < self.ERROR_RATE)
-      knowledge[knowledge_mask] = error_bits
-      # fill in true hand (using other player's observation)
-      other_observation = self.debug_other_obs['vectorized']
-      true_hand = np.array(other_observation[:self.hands_bits-2]).reshape(
-                           self.players-1, self.handsize, self.colors, self.ranks)
-      knowledge |= true_hand[0,...]
-
-    all_counts = counts * knowledge
-    #if self.debug_obs['deck_size'] < 2:
-    #  pdb.set_trace()
-    return all_counts
+    ### testing pretrained mdp with full knowledge plus some error
+    self.obs.debug_with_nearly_perfect_knowledge = False
+    # [0-1] add bits from card knowledge with this chance
+    # 0 is same as qmdp, 1 is same as debug_full_obs
+    self.obs.ERROR_RATE = 0.0
 
   def _sample_hand(self, observation, n_samples=25):
-    slots = range(self.handsize)
+    slots = range(self.obs.handsize)
     samples = self._sample_hand_slots(observation, slots, n_samples, samples_only=True)
     return samples
 
@@ -430,7 +278,7 @@ class QMDPAgent(object):
        - encode into placeholder format
     '''
     # flatten array of each card in hand
-    card_counts = self.card_counts(observation).reshape(self.handsize, -1)
+    card_counts = self.obs.card_counts(observation).reshape(self.obs.handsize, -1)
 
     samples = []
     for sample_i in range(n_samples):
@@ -468,32 +316,8 @@ class QMDPAgent(object):
         samples.append((np.array(slot_inds), np.array(card_inds), joint_prob, counts))
     return samples
 
-  def full_obs_vector(self, observation):
-    '''
-    returns the fully observable vector components with:
-    - Board
-      - Deck
-      - Fireworks
-      - Info tokens
-      - Life tokens
-    - Discards
-    - Hands (or if not fully observed, card knowledge)
-      - (without bits indicating which hints were given)
-    '''
-    knowledge = np.array(observation[self.action_bits:])
-    knowledge = knowledge.reshape(self.players,
-                                  self.handsize,
-                                  self.cardbits + self.colors + self.ranks)
-    no_reveal_hist = knowledge[:,:,:self.cardbits].flatten()
-    knowledge_len = no_reveal_hist.shape[0]
-    mdp_observation_vector = np.concatenate((
-                       observation[self.hands_bits:self.discard_bits],
-                       no_reveal_hist))
-
-    return mdp_observation_vector
-
   def begin_episode(self, current_player, legal_actions, observation):
-    mdp_observation_vector = self.full_obs_vector(observation)
+    mdp_observation_vector = self.obs.full_obs_vector(observation)
     return self.pretrained_mdp.begin_episode(current_player, legal_actions,
                                              mdp_observation_vector)
 
@@ -518,7 +342,7 @@ class QMDPAgent(object):
       return np.random.choice(legal_action_indices[0])
     else:
       if (self.debug_full_obs):
-        mdp_observation = self.full_obs_vector(observation)
+        mdp_observation = self.obs.full_obs_vector(observation)
         action = self.pretrained_mdp._select_action(mdp_observation, legal_actions)
       else:
         avg_q_a = self._expected_action_value(observation)
@@ -536,25 +360,24 @@ class QMDPAgent(object):
     mdp = self.pretrained_mdp
     ## construct (most of) fully observable observation vector
     # after this, we'll fill in our sampled card knowledge
-    mdp_observation_vector = self.full_obs_vector(observation)
+    mdp_observation_vector = self.obs.full_obs_vector(observation)
     # get samples
     samples = self._sample_hand(observation, n_samples)
     avg_q_a = 0
     # fill in sampled card knowledge and compute q value
-    obs = np.array(mdp_observation_vector)
+    mdp_obs = np.array(mdp_observation_vector)
     # pull out the card knowledge section
     # (which is the fully observed hand components)
-    knowledge = self.reshape_hand(obs[-self.num_knowledge_bits:],
-                                  num_players=self.players)
-    hand = knowledge[0,...].reshape(self.handsize, -1)
+    knowledge = self.obs.reshape_hands(self.obs.mdp_hands(mdp_obs))
+    hand = knowledge[0,...].reshape(self.obs.handsize, -1)
     # fill in other players' knowledge too using their hands
     others_knowledge = knowledge[1:,...]
-    others_knowledge[:] = self.reshape_hand(observation[:self.hands_bits-2],
-                                            num_players=self.players-1)
+    other_hands = self.obs.hands(observation)
+    others_knowledge[:] = self.obs.reshape_hands(other_hands)
     for slot_inds, card_inds in samples:
       hand[:] = 0
       hand[slot_inds, card_inds] = 1
-      mdp.state[0, :, 0] = obs
+      mdp.state[0, :, 0] = mdp_obs
       q_a_vec = mdp._sess.run(mdp._q, {mdp.state_ph: mdp.state})
       avg_q_a += q_a_vec
     avg_q_a /= len(samples)
@@ -579,24 +402,23 @@ class QMDPAgent(object):
     ## construct (most of) fully observable observation vector
     # after this, we'll fill in our sampled card knowledge
 
-    mdp_observation_vector = self.full_obs_vector(observation)
+    mdp_observation_vector = self.obs.full_obs_vector(observation)
 
 
     avg_q_a = 0
     # fill in sampled card knowledge and compute q value
-    obs = np.array(mdp_observation_vector)
-
-    knowledge = self.reshape_hand(obs[-self.num_knowledge_bits:],
-                                  num_players=self.players)
-    hand = knowledge[0,...].reshape(self.handsize, -1)
+    mdp_obs = np.array(mdp_observation_vector)
+    # pull out the card knowledge section
+    # (which is the fully observed hand components)
+    knowledge = self.obs.reshape_hands(self.obs.mdp_hands(mdp_obs))
+    hand = knowledge[0,...].reshape(self.obs.handsize, -1)
     # fill in other players' knowledge too using their hands
     others_knowledge = knowledge[1:,...]
-    others_knowledge[:] = self.reshape_hand(observation[:self.hands_bits-2],
-                                            num_players=self.players-1)
-
-    for hand_i in range(self.handsize):
+    other_hands = self.obs.hands(observation)
+    others_knowledge[:] = self.obs.reshape_hands(other_hands)
+    for hand_i in range(self.obs.handsize):
       # TODO: unit test this
-      slot_index = np.arange(self.handsize)
+      slot_index = np.arange(self.obs.handsize)
       slot_index = slot_index[slot_index != hand_i] # omit one card
       samples = self._sample_hand_slots(observation,
                                         slots = slot_index,
@@ -606,14 +428,14 @@ class QMDPAgent(object):
         # the returned counts are updated to remove those sampled
         card_count = counts[hand_i]
         prob = card_count / (1.0 * np.sum(card_count))
-        for card_i in range(self.colors * self.ranks):
+        for card_i in range(self.obs.colors * self.obs.ranks):
           hand[:] = 0
           hand[slot_inds, card_inds] = 1 # set sampled cards
           hand[hand_i, card_i] = 1 # set this card
-          mdp.state[0, :, 0] = obs
+          mdp.state[0, :, 0] = mdp_obs
           q_a_vec = mdp._sess.run(mdp._q, {mdp.state_ph: mdp.state})
           avg_q_a += q_a_vec * prob[card_i]
-    avg_q_a /= len(samples * self.colors * self.ranks)
+    avg_q_a /= len(samples * self.obs.colors * self.obs.ranks)
     return avg_q_a
 
   def step(self, reward, current_player, legal_actions, observation):
@@ -642,9 +464,10 @@ if __name__ == '__main__':
     quit()
 
   environment = run_experiment.create_environment()
-  obs_stacker = run_experiment.create_obs_stacker(environment, history_size=1)
+  observation_adapter = ObservationAdapter(environment, run_experiment)
+  obs_stacker = observation_adapter.obs_stacker
 
-  agent = QMDPAgent(game = environment.game,
+  agent = QMDPAgent(observation_adapter = observation_adapter,
                     checkpoint_dir = CKPT_DIR,
                     agent_type = test,
                     observation_size=obs_stacker.observation_size(),
@@ -652,4 +475,5 @@ if __name__ == '__main__':
                     num_players=environment.players)
 
   res = run_one_episode(agent, environment, obs_stacker)
+
 
